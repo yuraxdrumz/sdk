@@ -30,13 +30,13 @@ import (
 
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/networkservicemesh/sdk/pkg/ipam/vl3ipam"
+	"github.com/networkservicemesh/sdk/pkg/registry/chains/memory"
 	"github.com/networkservicemesh/sdk/pkg/tools/grpcutils"
 )
 
-func newVL3IPAMServer(ctx context.Context, t *testing.T, prefix string, initialSize uint8) url.URL {
+func newMemoryIpamServer(ctx context.Context, t *testing.T, prefix string, initialSize uint8) url.URL {
 	var s = grpc.NewServer()
-	ipam.RegisterIPAMServer(s, vl3ipam.NewIPAMServer(prefix, initialSize))
+	ipam.RegisterIPAMServer(s, memory.NewIPAMServer(prefix, initialSize))
 
 	var serverAddr url.URL
 
@@ -68,7 +68,7 @@ func Test_vl3_IPAM_Allocate(t *testing.T) {
 	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
-	connectTO := newVL3IPAMServer(ctx, t, "172.16.0.0/16", 24)
+	connectTO := newMemoryIpamServer(ctx, t, "172.16.0.0/16", 24)
 
 	for i := 0; i < 10; i++ {
 		c := newVL3IPAMClient(ctx, t, &connectTO)
@@ -98,7 +98,7 @@ func Test_vl3_IPAM_Allocate2(t *testing.T) {
 
 	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
-	connectTO := newVL3IPAMServer(ctx, t, "173.16.0.0/16", 24)
+	connectTO := newMemoryIpamServer(ctx, t, "173.16.0.0/16", 24)
 
 	for i := 0; i < 10; i++ {
 		clientCTX, cancel := context.WithCancel(ctx)
@@ -131,7 +131,7 @@ func Test_vl3_IPAM_Allocate3(t *testing.T) {
 	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
-	connectTO := newVL3IPAMServer(ctx, t, "172.16.0.0/16", 24)
+	connectTO := newMemoryIpamServer(ctx, t, "172.16.0.0/16", 24)
 
 	for i := 0; i < 10; i++ {
 		clientCTX, cancel := context.WithCancel(ctx)
