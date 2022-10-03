@@ -14,7 +14,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package ipam_test
+package memory_test
 
 import (
 	"context"
