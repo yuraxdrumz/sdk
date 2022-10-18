@@ -37,6 +37,10 @@ var ErrEndpointInfoUndefined = errors.New("client tried to create new ipam entry
 // ErrOutOfRange means that ip pool of IPAM is empty
 var ErrOutOfRange = errors.New("prefix is out of range or already in use")
 
+var IPPoolNotInitializedWithPrefix = errors.New("ip pool was not initialized with proper prefix")
+
+var ErrClientNotExists = errors.New("client does not have ip information")
+
 type prefixAndIPPool struct {
 	prefix *net.IPNet
 	pool *ippool.IPPool
@@ -69,8 +73,16 @@ func NewIPAMServer(prefix string, initialNSEPrefixSize uint8) ipam.IPAMV2Server 
 var _ ipam.IPAMV2Server = (*memoryIPAMServer)(nil)
 
 
+func (i *connectionInfo) shouldUpdate(exclude *ippool.IPPool) bool {
+	srcIP, _, srcErr := net.ParseCIDR(i.srcAddr)
+	dstIP, _, dstErr := net.ParseCIDR(i.dstAddr)
+
+	return srcErr == nil && exclude.ContainsString(srcIP.String()) || dstErr == nil && exclude.ContainsString(dstIP.String())
+}
+
 func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Client) (*ipam.Client, error) {
 	s.poolMutex.Lock()
+	defer s.poolMutex.Unlock()
 	ipv4exclude := ippool.New(net.IPv4len)
 	ipv6exclude := ippool.New(net.IPv6len)
 	for _, prefix := range client.ExcludePrefixes {
@@ -86,7 +98,6 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 	// endpoint should have created an ip pool already
 	if conn == nil {
 		log.FromContext(ctx).WithField("client", client).Errorf("endpoint should have populated info for network service = %s", nsName)
-		s.poolMutex.Unlock()
 		return nil, ErrEndpointInfoUndefined
 	}
 
@@ -98,13 +109,23 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 	// check client name in inner map
 	clientInfo := conn.clientInfo[client.Name]
 
-	// if client exists return same addr
-	if clientInfo != nil {
+	// if client info exists and src and dst do not fall in exclude range
+	if clientInfo != nil && !clientInfo.shouldUpdate(ipv4exclude) && !clientInfo.shouldUpdate(ipv6exclude) {
 		log.FromContext(ctx).Debugf("found existing info for client, for network service = %s, client name = %s, src = %s, dst = %s", nsName, client.Name, clientInfo.srcAddr, clientInfo.dstAddr)
-		client.SrcAddress = clientInfo.srcAddr
-		client.DstAddress = clientInfo.dstAddr
+		// TODO, check if addresses from Request and clientInfo differ?
+		// client.SrcAddress = []string{clientInfo.srcAddr}
+		// client.DstAddress = []string{clientInfo.dstAddr}
+		if client.SrcAddress == nil {
+			client.SrcAddress = []string{clientInfo.srcAddr}
+		}
+		if client.DstAddress == nil {
+			client.DstAddress = []string{clientInfo.dstAddr}
+		}
+
 		return client, nil
 	}
+
+	// otherwise, either client info does not exist or we need to update the exclude prefixes
 
 	// if not, pull new p2p ip from pool
 	dstAddr, srcAddr, err := conn.pool.PullP2PAddrs(ipv4exclude, ipv6exclude)
@@ -116,17 +137,82 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 	// save new client in map
 	newClientConnInfo := &connectionInfo{srcAddr: srcAddr.String(), dstAddr: dstAddr.String()}
 	conn.clientInfo[client.Name] = newClientConnInfo
-	s.poolMutex.Unlock()
+
+
+	clientSrcAddresses := []string{}
+	clientDstAddresses := []string{}
+	// clientInfo changed due to ip exclusion, update client response list
+	if clientInfo != nil && clientInfo.srcAddr != newClientConnInfo.srcAddr {
+		for _, ip := range client.SrcAddress {
+			if ip != clientInfo.srcAddr {
+				clientSrcAddresses = append(clientSrcAddresses, ip)
+			}
+		}
+		client.SrcAddress = clientSrcAddresses
+	}
+
+	if clientInfo != nil && clientInfo.dstAddr != newClientConnInfo.dstAddr {
+		for _, ip := range client.DstAddress {
+			if ip != clientInfo.dstAddr {
+				clientDstAddresses = append(clientDstAddresses, ip)
+			}
+		}
+		client.DstAddress = clientDstAddresses
+	}
+
 	// return new adresses
-	client.SrcAddress = clientInfo.srcAddr
-	client.DstAddress = clientInfo.dstAddr
+	client.SrcAddress = append(client.SrcAddress, newClientConnInfo.srcAddr)
+	client.DstAddress = append(client.DstAddress, newClientConnInfo.dstAddr)
 	return client, nil
 }
+
+func filter(ss []string, test func(string) bool) (ret []string) {
+    for _, s := range ss {
+        if test(s) {
+            ret = append(ret, s)
+        }
+    }
+    return
+}
+
+
 func (s *memoryIPAMServer) UnregisterEndpoint(ctx context.Context, endpoint *ipam.Endpoint) (*emptypb.Empty, error) {
 	return nil, nil
 }
 func (s *memoryIPAMServer) UnregisterClient(ctx context.Context, client *ipam.Client) (*emptypb.Empty, error) {
-	return nil, nil
+	s.poolMutex.Lock()
+	defer s.poolMutex.Unlock()
+	// get ns name
+	nsName := client.NetworkServiceNames[0]
+	// get ns map from cache, should have endpoint already populated it
+	conn := s.nameToPrefixAndIPPoolCache[nsName]
+
+	// endpoint should have created an ip pool already
+	if conn == nil {
+		log.FromContext(ctx).WithField("client", client).Errorf("endpoint should have populated info for network service = %s", nsName)
+		s.poolMutex.Unlock()
+		return nil, ErrEndpointInfoUndefined
+	}
+
+
+	// check client name in inner map
+	clientInfo := conn.clientInfo[client.Name]
+
+	// if client exists return same addr
+	if clientInfo == nil {
+		log.FromContext(ctx).Debugf("did not find information, for network service = %s, client name = %s", nsName, client.Name)
+		return &emptypb.Empty{}, ErrClientNotExists
+	}
+
+	log.FromContext(ctx).Debugf("returning client name = %s src = %s and dst = %s addresses back to ip pool, for network service = %s", client.Name, clientInfo.srcAddr, clientInfo.dstAddr, nsName)
+
+	conn.pool.AddNetString(clientInfo.srcAddr)
+	conn.pool.AddNetString(clientInfo.dstAddr)
+
+	// delete client information
+	conn.clientInfo[client.Name] = nil
+
+	return &emptypb.Empty{}, nil
 }
 
 func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.Endpoint) (*ipam.Endpoint, error) {
@@ -134,6 +220,13 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 	var mutex = &s.poolMutex
 	var err error
 	nsName := endpoint.NetworkServiceNames[0]
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	if generalIPPool == nil {
+		return nil, IPPoolNotInitializedWithPrefix
+	}
 
 	switch endpoint.Type {
 		case ipam.Type_UNDEFINED:
@@ -144,7 +237,7 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 			pool := s.nameToPrefixAndIPPoolCache[nsName]
 
 			var resp ipam.Endpoint
-			mutex.Lock()
+			
 			for _, excludePrefix := range endpoint.ExcludePrefixes {
 				log.FromContext(ctx).Debugf("excluding prefix from pool, prefix = %s", excludePrefix)
 				generalIPPool.ExcludeString(excludePrefix)
@@ -155,7 +248,6 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 				var ip net.IP
 				ip, err = generalIPPool.Pull()
 				if err != nil {
-					mutex.Unlock()
 					break
 				}
 
@@ -188,7 +280,6 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 			generalIPPool.ExcludeString(resp.Prefix)
 			resp.ExcludePrefixes = endpoint.ExcludePrefixes
 			resp.ExcludePrefixes = append(resp.ExcludePrefixes, s.excludedPrefixes...)
-			mutex.Unlock()
 			return &resp, nil
 		case ipam.Type_DELETE:
 			log.FromContext(ctx).Debugf("starting to delete all client prefixes for endpoint name = %s", endpoint.Name)
@@ -197,19 +288,16 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 					log.FromContext(ctx).Debugf("client prefix = %s does not match endpoint prefix %s, continue", p, endpoint.Prefix)
 					continue
 				}
-				mutex.Lock()
 				generalIPPool.AddNetString(p)
 				s.nameToPrefixAndIPPoolCache[nsName] = nil
 				s.clientsPrefixes = append(s.clientsPrefixes[:i], s.clientsPrefixes[i+1:]...)
-				mutex.Unlock()
 				break
 			}
 	}
 
-	mutex.Lock()
 	for _, prefix := range s.clientsPrefixes {
 		generalIPPool.AddNetString(prefix)
 	}
-	mutex.Unlock()
+
 	return endpoint, err
 }

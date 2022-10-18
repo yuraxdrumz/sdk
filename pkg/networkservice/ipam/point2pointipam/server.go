@@ -28,6 +28,7 @@ import (
 
 	ipamapi "github.com/networkservicemesh/api/pkg/api/ipam"
 	"github.com/networkservicemesh/sdk/pkg/networkservice/core/next"
+	"github.com/networkservicemesh/sdk/pkg/tools/log"
 )
 
 type ipamServer struct {
@@ -60,6 +61,8 @@ func (s *ipamServer) Request(ctx context.Context, request *networkservice.Networ
 		NetworkServiceNames: []string{request.Connection.NetworkService},
 		NetworkServiceLabels: nil,
 		ExcludePrefixes: ipContext.GetExcludedPrefixes(),
+		SrcAddress: ipContext.GetSrcIpAddrs(),
+		DstAddress: ipContext.GetDstIpAddrs(),
 	})
 
 
@@ -67,11 +70,25 @@ func (s *ipamServer) Request(ctx context.Context, request *networkservice.Networ
 		return nil, err
 	}
 
-	ipContext.SrcIpAddrs = []string{clientResponse.SrcAddress}
-	ipContext.DstIpAddrs = []string{clientResponse.DstAddress}
-	ipContext.SrcIpAddrs = []string{clientResponse.SrcAddress}
-	ipContext.DstIpAddrs = []string{clientResponse.DstAddress}
-	
+	// ipam decides which addresses to keep
+	ipContext.SrcIpAddrs = clientResponse.SrcAddress
+	ipContext.DstIpAddrs = clientResponse.DstAddress
+
+	srcRoutes := []*networkservice.Route{}
+	dstRoutes := []*networkservice.Route{}
+
+	// derive routes from src and dst addresses
+
+	for _, addr := range clientResponse.SrcAddress {
+		dstRoutes = append(dstRoutes, &networkservice.Route{Prefix: addr})
+	}
+
+	for _, addr := range clientResponse.DstAddress {
+		srcRoutes = append(srcRoutes, &networkservice.Route{Prefix: addr})
+	}
+
+	ipContext.DstRoutes = dstRoutes
+	ipContext.SrcRoutes = srcRoutes
 
 	conn, err = next.Server(ctx).Request(ctx, request)
 	if err != nil {
@@ -82,5 +99,22 @@ func (s *ipamServer) Request(ctx context.Context, request *networkservice.Networ
 }
 
 func (s *ipamServer) Close(ctx context.Context, conn *networkservice.Connection) (_ *empty.Empty, err error) {
+	ipContext := conn.GetContext().GetIpContext()
+
+	// clients always start the flow and are first in path segements
+	extractedClientName := conn.Path.PathSegments[0].Name
+
+	_, err = s.ipamClient.UnregisterClient(ctx, &ipamapi.Client{
+		Id: conn.GetId(),
+		Name: extractedClientName,
+		NetworkServiceNames: []string{conn.NetworkService},
+		NetworkServiceLabels: nil,
+		ExcludePrefixes: ipContext.GetExcludedPrefixes(),
+	})
+
+	if err != nil {
+		log.FromContext(ctx).Errorf("failed unregistering client = %s in ipam, network service = %s", extractedClientName, conn.NetworkService)
+	}
+
 	return next.Server(ctx).Close(ctx, conn)
 }

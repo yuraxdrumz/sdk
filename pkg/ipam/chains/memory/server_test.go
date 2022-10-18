@@ -30,13 +30,13 @@ import (
 
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/networkservicemesh/sdk/pkg/registry/chains/memory"
+	"github.com/networkservicemesh/sdk/pkg/ipam/chains/memory"
 	"github.com/networkservicemesh/sdk/pkg/tools/grpcutils"
 )
 
 func newMemoryIpamServer(ctx context.Context, t *testing.T, prefix string, initialSize uint8) url.URL {
 	var s = grpc.NewServer()
-	ipam.RegisterIPAMServer(s, memory.NewIPAMServer(prefix, initialSize))
+	ipam.RegisterIPAMV2Server(s, memory.NewIPAMServer(prefix, initialSize))
 
 	var serverAddr url.URL
 
@@ -45,7 +45,7 @@ func newMemoryIpamServer(ctx context.Context, t *testing.T, prefix string, initi
 	return serverAddr
 }
 
-func newVL3IPAMClient(ctx context.Context, t *testing.T, connectTO *url.URL) ipam.IPAMClient {
+func newIPAMClient(ctx context.Context, t *testing.T, connectTO *url.URL) ipam.IPAMV2Client {
 	var cc, err = grpc.DialContext(
 		ctx, grpcutils.URLToTarget(connectTO),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -57,10 +57,10 @@ func newVL3IPAMClient(ctx context.Context, t *testing.T, connectTO *url.URL) ipa
 		_ = cc.Close()
 	}()
 
-	return ipam.NewIPAMClient(cc)
+	return ipam.NewIPAMV2Client(cc)
 }
 
-func Test_vl3_IPAM_Allocate(t *testing.T) {
+func Test_IPAM_Endpoint_Allocate_Different_CIDRS_Different_NS(t *testing.T) {
 	t.Cleanup(func() {
 		goleak.VerifyNone(t)
 	})
@@ -71,59 +71,21 @@ func Test_vl3_IPAM_Allocate(t *testing.T) {
 	connectTO := newMemoryIpamServer(ctx, t, "172.16.0.0/16", 24)
 
 	for i := 0; i < 10; i++ {
-		c := newVL3IPAMClient(ctx, t, &connectTO)
+		c := newIPAMClient(ctx, t, &connectTO)
 
-		var stream, err = c.ManagePrefixes(ctx)
-
-		require.NoError(t, err, i)
-
-		err = stream.Send(&ipam.PrefixRequest{
+		endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
 			Type: ipam.Type_ALLOCATE,
+			Name: fmt.Sprintf("endpoint-%d", i),
+			NetworkServiceNames: []string{fmt.Sprintf("ns-%d", i)},
 		})
 
 		require.NoError(t, err)
-
-		resp, err := stream.Recv()
-		require.NoError(t, err)
-
-		require.Equal(t, fmt.Sprintf("172.16.%v.0/24", i), resp.Prefix, i)
-		require.NotEmpty(t, resp.ExcludePrefixes)
+		require.Equal(t, fmt.Sprintf("172.16.%v.0/24", i), endpoint.Prefix, i)
+		require.NotEmpty(t, endpoint.ExcludePrefixes)
 	}
 }
 
-func Test_vl3_IPAM_Allocate2(t *testing.T) {
-	t.Cleanup(func() {
-		goleak.VerifyNone(t)
-	})
-
-	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
-	connectTO := newMemoryIpamServer(ctx, t, "173.16.0.0/16", 24)
-
-	for i := 0; i < 10; i++ {
-		clientCTX, cancel := context.WithCancel(ctx)
-		c := newVL3IPAMClient(clientCTX, t, &connectTO)
-
-		var stream, err = c.ManagePrefixes(clientCTX)
-		require.NoError(t, err, i)
-
-		err = stream.Send(&ipam.PrefixRequest{
-			Type: ipam.Type_ALLOCATE,
-		})
-
-		require.NoError(t, err)
-
-		resp, err := stream.Recv()
-		require.NoError(t, err)
-
-		require.Equal(t, "173.16.0.0/24", resp.Prefix, i)
-		require.NotEmpty(t, resp.ExcludePrefixes, i)
-		cancel()
-		time.Sleep(time.Millisecond * 50)
-	}
-}
-
-func Test_vl3_IPAM_Allocate3(t *testing.T) {
+func Test_IPAM_Endpoint_Allocate_Same_CIDRS_Same_NS(t *testing.T) {
 	t.Cleanup(func() {
 		goleak.VerifyNone(t)
 	})
@@ -134,25 +96,197 @@ func Test_vl3_IPAM_Allocate3(t *testing.T) {
 	connectTO := newMemoryIpamServer(ctx, t, "172.16.0.0/16", 24)
 
 	for i := 0; i < 10; i++ {
-		clientCTX, cancel := context.WithCancel(ctx)
-		c := newVL3IPAMClient(clientCTX, t, &connectTO)
+		c := newIPAMClient(ctx, t, &connectTO)
 
-		var stream, err = c.ManagePrefixes(clientCTX)
-		require.NoError(t, err, i)
-
-		err = stream.Send(&ipam.PrefixRequest{
-			Type:   ipam.Type_ALLOCATE,
-			Prefix: "172.16.0.0/30",
+		endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
+			Type: ipam.Type_ALLOCATE,
+			Name: fmt.Sprintf("endpoint-%d", i),
+			NetworkServiceNames: []string{"same-ns"},
 		})
 
 		require.NoError(t, err)
-
-		resp, err := stream.Recv()
-		require.NoError(t, err)
-
-		require.Equal(t, "172.16.0.0/30", resp.Prefix, i)
-		require.NotEmpty(t, resp.ExcludePrefixes, i)
-		cancel()
-		time.Sleep(time.Millisecond * 50)
+		require.Equal(t, "172.16.0.0/24", endpoint.Prefix, i)
+		require.NotEmpty(t, endpoint.ExcludePrefixes)
 	}
+}
+
+func Test_IPAM_Same_Client_Allocate_Twice(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	connectTO := newMemoryIpamServer(ctx, t, "172.31.0.0/16", 24)
+
+	c := newIPAMClient(ctx, t, &connectTO)
+
+	endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
+		Type: ipam.Type_ALLOCATE,
+		Name: "endpoint-1",
+		NetworkServiceNames: []string{"ns-1"},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.0/24", endpoint.Prefix, "endpoint-1")
+	require.NotEmpty(t, endpoint.ExcludePrefixes)
+
+
+	client, err := c.RegisterClient(ctx, &ipam.Client{
+		Id: "1",
+		Name: "client-1",
+		NetworkServiceNames: []string{"ns-1"},
+		ExcludePrefixes: endpoint.ExcludePrefixes,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.1/32", client.SrcAddress[0], "client-1")
+	require.Equal(t, "172.31.0.0/32", client.DstAddress[0], "client-1")
+	require.NotEmpty(t, client.ExcludePrefixes)
+
+
+	sameClient, err := c.RegisterClient(ctx, &ipam.Client{
+		Id: "1",
+		Name: "client-1",
+		NetworkServiceNames: []string{"ns-1"},
+		ExcludePrefixes: endpoint.ExcludePrefixes,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.1/32", sameClient.SrcAddress[0], "client-1")
+	require.Equal(t, "172.31.0.0/32", sameClient.DstAddress[0], "client-1")
+	require.NotEmpty(t, sameClient.ExcludePrefixes)
+}
+
+
+func Test_IPAM_Different_Client_Allocate_Twice(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	connectTO := newMemoryIpamServer(ctx, t, "172.31.0.0/16", 24)
+
+	c := newIPAMClient(ctx, t, &connectTO)
+
+	endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
+		Type: ipam.Type_ALLOCATE,
+		Name: "endpoint-1",
+		NetworkServiceNames: []string{"ns-1"},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.0/24", endpoint.Prefix, "endpoint-1")
+	require.NotEmpty(t, endpoint.ExcludePrefixes)
+
+
+	client, err := c.RegisterClient(ctx, &ipam.Client{
+		Id: "1",
+		Name: "client-1",
+		NetworkServiceNames: []string{"ns-1"},
+		ExcludePrefixes: endpoint.ExcludePrefixes,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.1/32", client.SrcAddress[0], "client-1")
+	require.Equal(t, "172.31.0.0/32", client.DstAddress[0], "client-1")
+	require.NotEmpty(t, client.ExcludePrefixes)
+
+
+	client2, err := c.RegisterClient(ctx, &ipam.Client{
+		Id: "1",
+		Name: "client-2",
+		NetworkServiceNames: []string{"ns-1"},
+		ExcludePrefixes: endpoint.ExcludePrefixes,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.3/32", client2.SrcAddress[0], "client-2")
+	require.Equal(t, "172.31.0.2/32", client2.DstAddress[0], "client-2")
+	require.NotEmpty(t, client2.ExcludePrefixes)
+}
+
+
+func Test_IPAM_Client_Allocate_Two_NS(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	connectTO := newMemoryIpamServer(ctx, t, "172.31.0.0/16", 24)
+
+	c := newIPAMClient(ctx, t, &connectTO)
+
+	endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
+		Type: ipam.Type_ALLOCATE,
+		Name: "endpoint-1",
+		NetworkServiceNames: []string{"ns-1"},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.0/24", endpoint.Prefix, "endpoint-1")
+	require.NotEmpty(t, endpoint.ExcludePrefixes)
+
+
+	endpoint2, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
+		Type: ipam.Type_ALLOCATE,
+		Name: "endpoint-2",
+		NetworkServiceNames: []string{"ns-2"},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.1.0/24", endpoint2.Prefix, "endpoint-2")
+	require.NotEmpty(t, endpoint2.ExcludePrefixes)
+
+
+	client, err := c.RegisterClient(ctx, &ipam.Client{
+		Id: "1",
+		Name: "client-1",
+		NetworkServiceNames: []string{"ns-1"},
+		ExcludePrefixes: nil,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.1/32", client.SrcAddress[0], "client-1")
+	require.Equal(t, "172.31.0.0/32", client.DstAddress[0], "client-1")
+
+	client2, err := c.RegisterClient(ctx, &ipam.Client{
+		Id: "2",
+		Name: "client-2",
+		NetworkServiceNames: []string{"ns-2"},
+		ExcludePrefixes: nil,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.1.1/32", client2.SrcAddress[0], "client-2")
+	require.Equal(t, "172.31.1.0/32", client2.DstAddress[0], "client-2")
+
+}
+
+
+func Test_IPAM_Client_Allocate_Endpoint_Not_Exists(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	connectTO := newMemoryIpamServer(ctx, t, "172.31.0.0/16", 24)
+
+	c := newIPAMClient(ctx, t, &connectTO)
+
+	_, err := c.RegisterClient(ctx, &ipam.Client{
+		Id: "1",
+		Name: "client-1",
+		NetworkServiceNames: []string{"ns-1"},
+		ExcludePrefixes: nil,
+	})
+
+	require.ErrorContains(t, err, memory.ErrEndpointInfoUndefined.Error())
 }
