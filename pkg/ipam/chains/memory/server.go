@@ -166,16 +166,6 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 	return client, nil
 }
 
-func filter(ss []string, test func(string) bool) (ret []string) {
-    for _, s := range ss {
-        if test(s) {
-            ret = append(ret, s)
-        }
-    }
-    return
-}
-
-
 func (s *memoryIPAMServer) UnregisterEndpoint(ctx context.Context, endpoint *ipam.Endpoint) (*emptypb.Empty, error) {
 	return nil, nil
 }
