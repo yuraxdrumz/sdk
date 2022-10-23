@@ -24,7 +24,6 @@ import (
 
 	"github.com/edwarnicke/serialize"
 	"github.com/golang/protobuf/ptypes/empty"
-	"github.com/networkservicemesh/api/pkg/api/ipam"
 	"github.com/networkservicemesh/api/pkg/api/networkservice"
 	"google.golang.org/grpc"
 
@@ -43,76 +42,24 @@ type vl3Client struct {
 //
 //	Produces refresh on prefix update.
 //	Requires begin and metdata chain elements.
-func NewClient(chainContext context.Context, prefixCh <-chan *ipam.PrefixResponse) networkservice.NetworkServiceClient {
+func NewClient(chainContext context.Context) networkservice.NetworkServiceClient {
 	if chainContext == nil {
 		panic("chainContext can not be nil")
 	}
-	if prefixCh == nil {
-		panic("prefixCh can not be nil")
-	}
+
 	var r = &vl3Client{
 		chainContext: chainContext,
 	}
-
-	go func() {
-		for update := range prefixCh {
-			prefixResp := update
-			r.executor.AsyncExec(func() {
-				r.pool.reset(chainContext, prefixResp.GetPrefix(), prefixResp.GetExcludePrefixes())
-				for _, sub := range r.subscriptions {
-					sub <- struct{}{}
-				}
-			})
-		}
-	}()
 
 	return r
 }
 
 func (n *vl3Client) Request(ctx context.Context, request *networkservice.NetworkServiceRequest, opts ...grpc.CallOption) (*networkservice.Connection, error) {
-	if !n.pool.isInitialized() {
-		return nil, errors.New("prefix pool is initializing")
-	}
+
 	eventFactory := begin.FromContext(ctx)
 	if eventFactory == nil {
 		return nil, errors.New("begin is required. Please add begin.NewClient() into chain")
 	}
-	cancelCtx, cancel := context.WithCancel(n.chainContext)
-
-	if oldCancel, loaded := loadAndDeleteCancel(ctx); loaded {
-		oldCancel()
-	}
-
-	storeCancel(ctx, cancel)
-
-	notifyCh := make(chan struct{})
-
-	n.executor.AsyncExec(func() {
-		n.subscriptions = append(n.subscriptions, notifyCh)
-	})
-
-	go func() {
-		defer func() {
-			n.executor.AsyncExec(func() {
-				for i, sub := range n.subscriptions {
-					if sub == notifyCh {
-						n.subscriptions = append(n.subscriptions[:i], n.subscriptions[i+1:]...)
-						close(notifyCh)
-						return
-					}
-				}
-			})
-		}()
-
-		select {
-		case <-n.chainContext.Done():
-			return
-		case <-cancelCtx.Done():
-			return
-		case <-notifyCh:
-			eventFactory.Request(begin.CancelContext(cancelCtx))
-		}
-	}()
 
 	if request.Connection == nil {
 		request.Connection = new(networkservice.Connection)

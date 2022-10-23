@@ -47,11 +47,13 @@ var ErrClientNotExists = errors.New("client does not have ip information")
 type Client struct {
 	srcAddr string
 	dstAddr string
+	name string
 }
 type Endpoint struct {
 	pool *ippool.IPPool
 	prefix *net.IPNet
 	clientInfo map[string]*Client
+	name string
 }
 
 type NetworkServiceSettings struct {
@@ -125,12 +127,33 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 	// check client name in inner map
 	clientInfo := endpoint.clientInfo[client.Name]
 
+	// client info can be in another endpoint when healing occurs
+	if clientInfo == nil {
+		for _, existingEndpoint := range ns.endpoints {
+			for _, existingClient := range ns.endpoints[existingEndpoint.name].clientInfo {
+				if existingClient.name == client.Name {
+					log.FromContext(ctx).Debugf("found client in another endpoint = %s, moving client to current endpoint = %s", existingEndpoint.name, endpoint.name)
+					// set client to current endpoint
+					ns.endpoints[client.EndpointName].clientInfo[client.Name] = existingClient
+					// remove client from previous endpoint
+					delete(	ns.endpoints[existingEndpoint.name].clientInfo, client.Name)
+					// set current client info to existing info
+					clientInfo = existingClient
+				}
+			}
+		}
+	}
+
+	clientInfoNeedsUpdate := false
+	
+	if clientInfo != nil && (clientInfo.shouldUpdate(ipv4exclude) || clientInfo.shouldUpdate(ipv6exclude)) {
+		log.FromContext(ctx).Debugf("client info for network service = %s, client name = %s needs to be updated due to exclusion, from src = %s, from dst = %s", nsName, client.Name, clientInfo.srcAddr, clientInfo.dstAddr)
+		clientInfoNeedsUpdate = true
+	}
+
 	// if client info exists and src and dst do not fall in exclude range
-	if clientInfo != nil && !clientInfo.shouldUpdate(ipv4exclude) && !clientInfo.shouldUpdate(ipv6exclude) {
+	if clientInfo != nil && !clientInfoNeedsUpdate {
 		log.FromContext(ctx).Debugf("found existing info for client, for network service = %s, client name = %s, src = %s, dst = %s", nsName, client.Name, clientInfo.srcAddr, clientInfo.dstAddr)
-		// TODO, check if addresses from Request and clientInfo differ?
-		// client.SrcAddress = []string{clientInfo.srcAddr}
-		// client.DstAddress = []string{clientInfo.dstAddr}
 		if client.SrcAddress == nil {
 			client.SrcAddress = []string{clientInfo.srcAddr}
 		}
@@ -156,6 +179,7 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 	newClientConnInfo := &Client{
 		srcAddr: srcAddr.String(),
 		dstAddr: dstAddr.String(),
+		name: client.Name,
 	}
 
 	endpoint.clientInfo[client.Name] = newClientConnInfo
@@ -223,7 +247,7 @@ func (s *memoryIPAMServer) UnregisterClient(ctx context.Context, client *ipam.Cl
 	endpoint.pool.AddNetString(clientInfo.dstAddr)
 
 	// delete client information
-	endpoint.clientInfo[client.Name] = nil
+	delete(endpoint.clientInfo, client.Name)
 
 	return &emptypb.Empty{}, nil
 }
@@ -327,6 +351,7 @@ func (s *memoryIPAMServer) createEndpoint(ctx context.Context, epName string, ns
 		return &Endpoint{
 			pool: ns.pool,
 			prefix: ns.prefix,
+			name: epName,
 			clientInfo: make(map[string]*Client),
 		}, nil
 	}
@@ -350,6 +375,7 @@ func (s *memoryIPAMServer) createEndpoint(ctx context.Context, epName string, ns
 	return &Endpoint{
 		pool: endpointIPPool,
 		prefix: networkServiceCIDR,
+		name: epName,
 		clientInfo: make(map[string]*Client),
 	}, nil
 }
