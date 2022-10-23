@@ -73,7 +73,6 @@ func newIpamServer(ctx context.Context, t *testing.T, prefix string, initialSize
 	ipamClient := newIPAMClient(ctx, t, &serverAddress)
 
 	endpoint, err := ipamClient.RegisterEndpoint(ctx, &ipam.Endpoint{
-		Type: ipam.Type_ALLOCATE,
 		Name: "endpoint-1",
 		NetworkServiceNames: []string{"ns-1"},
 	})
@@ -88,13 +87,43 @@ func newIpamServer(ctx context.Context, t *testing.T, prefix string, initialSize
 	)
 }
 
-func newRequest(clientName string) *networkservice.NetworkServiceRequest {
+func newIpamServerVl3(ctx context.Context, t *testing.T, prefix string, initialSize uint8) networkservice.NetworkServiceServer {
+	serverAddress := newMemoryIpamServer(ctx, t, prefix, initialSize)
+	ipamClient := newIPAMClient(ctx, t, &serverAddress)
+
+	endpoint, err := ipamClient.RegisterEndpoint(ctx, &ipam.Endpoint{
+		Name: "endpoint-1",
+		NetworkServiceNames: []string{"ns-1"},
+		UniqueCidr: true,
+	})
+
+	require.NoError(t, err, "newIpamServer")
+	require.NotEmpty(t, endpoint.Prefix, "newIpamServer")
+
+	endpoint2, err := ipamClient.RegisterEndpoint(ctx, &ipam.Endpoint{
+		Name: "endpoint-2",
+		NetworkServiceNames: []string{"ns-1"},
+		UniqueCidr: true,
+	})
+
+	require.NoError(t, err, "newIpamServer")
+	require.NotEmpty(t, endpoint2.Prefix, "newIpamServer")
+
+	return next.NewNetworkServiceServer(
+		updatepath.NewServer("ipam"),
+		metadata.NewServer(),
+		point2pointipam.NewServer(ipamClient),
+	)
+}
+
+func newRequest(clientName string, endpointName string) *networkservice.NetworkServiceRequest {
 	return &networkservice.NetworkServiceRequest{
 		Connection: &networkservice.Connection{
 			Context: &networkservice.ConnectionContext{
 				IpContext: new(networkservice.IPContext),
 			},
 			NetworkService: "ns-1",
+			NetworkServiceEndpointName: endpointName,
 			Path: &networkservice.Path{
 				Index: 0,
 				PathSegments: []*networkservice.PathSegment{
@@ -136,46 +165,72 @@ func validateConns(t *testing.T, conn *networkservice.Connection, dsts, srcs []s
 func TestServer(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "192.168.3.4/16", 24)
 
-	conn1, err := srv.Request(context.Background(), newRequest("cl-1"))
+	conn1, err := srv.Request(context.Background(), newRequest("cl-1", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn1, "192.168.0.0/32", "192.168.0.1/32")
 
-	conn2, err := srv.Request(context.Background(), newRequest("cl-2"))
+	conn2, err := srv.Request(context.Background(), newRequest("cl-2", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn2, "192.168.0.2/32", "192.168.0.3/32")
 
 	_, err = srv.Close(context.Background(), conn1)
 	require.NoError(t, err)
 
-	conn3, err := srv.Request(context.Background(), newRequest("cl-3"))
+	conn3, err := srv.Request(context.Background(), newRequest("cl-3", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn3, "192.168.0.0/32", "192.168.0.1/32")
 
-	conn4, err := srv.Request(context.Background(), newRequest("cl-4"))
+	conn4, err := srv.Request(context.Background(), newRequest("cl-4", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn4, "192.168.0.4/32", "192.168.0.5/32")
+}
+
+func TestServerUniqueCIDR(t *testing.T) {
+	srv := newIpamServerVl3(context.Background(), t, "192.168.3.4/16", 24)
+
+	conn1, err := srv.Request(context.Background(), newRequest("cl-1", "endpoint-1"))
+	require.NoError(t, err)
+	validateConn(t, conn1, "192.168.0.0/32", "192.168.0.1/32")
+
+	conn2, err := srv.Request(context.Background(), newRequest("cl-2", "endpoint-2"))
+	require.NoError(t, err)
+	validateConn(t, conn2, "192.168.1.0/32", "192.168.1.1/32")
+
+	_, err = srv.Close(context.Background(), conn1)
+	require.NoError(t, err)
+
+	conn3, err := srv.Request(context.Background(), newRequest("cl-3", "endpoint-1"))
+	require.NoError(t, err)
+	validateConn(t, conn3, "192.168.0.0/32", "192.168.0.1/32")
+
+	_, err = srv.Close(context.Background(), conn2)
+	require.NoError(t, err)
+
+	conn4, err := srv.Request(context.Background(), newRequest("cl-4", "endpoint-2"))
+	require.NoError(t, err)
+	validateConn(t, conn4, "192.168.1.0/32", "192.168.1.1/32")
 }
 
 //nolint:dupl
 func TestServerIPv6(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "fe80::/64", 24)
 
-	conn1, err := srv.Request(context.Background(), newRequest("cl-1"))
+	conn1, err := srv.Request(context.Background(), newRequest("cl-1", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn1, "fe80::/128", "fe80::1/128")
 
-	conn2, err := srv.Request(context.Background(), newRequest("cl-2"))
+	conn2, err := srv.Request(context.Background(), newRequest("cl-2", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn2, "fe80::2/128", "fe80::3/128")
 
 	_, err = srv.Close(context.Background(), conn1)
 	require.NoError(t, err)
 
-	conn3, err := srv.Request(context.Background(), newRequest("cl-3"))
+	conn3, err := srv.Request(context.Background(), newRequest("cl-3", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn3, "fe80::/128", "fe80::1/128")
 
-	conn4, err := srv.Request(context.Background(), newRequest("cl-4"))
+	conn4, err := srv.Request(context.Background(), newRequest("cl-4", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn4, "fe80::4/128", "fe80::5/128")
 }
@@ -184,21 +239,21 @@ func TestServerIPv6(t *testing.T) {
 func TestExclude32Prefix(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "192.168.1.0/24", 24)
 	// Test center of assigned
-	req1 := newRequest("cl-1")
+	req1 := newRequest("cl-1", "endpoint-1")
 	req1.Connection.Context.IpContext.ExcludedPrefixes = []string{"192.168.1.1/32", "192.168.1.3/32", "192.168.1.6/32"}
 	conn1, err := srv.Request(context.Background(), req1)
 	require.NoError(t, err)
 	validateConn(t, conn1, "192.168.1.0/32", "192.168.1.2/32")
 
 	// Test exclude before assigned
-	req2 := newRequest("cl-2")
+	req2 := newRequest("cl-2","endpoint-1")
 	req2.Connection.Context.IpContext.ExcludedPrefixes = []string{"192.168.1.1/32", "192.168.1.3/32", "192.168.1.6/32"}
 	conn2, err := srv.Request(context.Background(), req2)
 	require.NoError(t, err)
 	validateConn(t, conn2, "192.168.1.4/32", "192.168.1.5/32")
 
 	// Test after assigned
-	req3 := newRequest("cl-3")
+	req3 := newRequest("cl-3", "endpoint-1")
 	req3.Connection.Context.IpContext.ExcludedPrefixes = []string{"192.168.1.1/32", "192.168.1.3/32", "192.168.1.6/32"}
 	conn3, err := srv.Request(context.Background(), req3)
 	require.NoError(t, err)
@@ -210,21 +265,21 @@ func TestExclude128PrefixIPv6(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "fe80::1:0/112", 124)
 
 	// Test center of assigned
-	req1 := newRequest("cl-1")
+	req1 := newRequest("cl-1", "endpoint-1")
 	req1.Connection.Context.IpContext.ExcludedPrefixes = []string{"fe80::1:1/128", "fe80::1:3/128", "fe80::1:6/128"}
 	conn1, err := srv.Request(context.Background(), req1)
 	require.NoError(t, err)
 	validateConn(t, conn1, "fe80::1:0/128", "fe80::1:2/128")
 
 	// Test exclude before assigned
-	req2 := newRequest("cl-2")
+	req2 := newRequest("cl-2", "endpoint-1")
 	req2.Connection.Context.IpContext.ExcludedPrefixes = []string{"fe80::1:1/128", "fe80::1:3/128", "fe80::1:6/128"}
 	conn2, err := srv.Request(context.Background(), req2)
 	require.NoError(t, err)
 	validateConn(t, conn2, "fe80::1:4/128", "fe80::1:5/128")
 
 	// Test after assigned
-	req3 := newRequest("cl-3")
+	req3 := newRequest("cl-3", "endpoint-1")
 	req3.Connection.Context.IpContext.ExcludedPrefixes = []string{"fe80::1:1/128", "fe80::1:3/128", "fe80::1:6/128"}
 	conn3, err := srv.Request(context.Background(), req3)
 	require.NoError(t, err)
@@ -234,12 +289,12 @@ func TestExclude128PrefixIPv6(t *testing.T) {
 func TestOutOfIPs(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "192.168.1.2/31", 31)
 
-	req1 := newRequest("cl-1")
+	req1 := newRequest("cl-1", "endpoint-1")
 	conn1, err := srv.Request(context.Background(), req1)
 	require.NoError(t, err)
 	validateConn(t, conn1, "192.168.1.2/32", "192.168.1.3/32")
 
-	req2 := newRequest("cl-2")
+	req2 := newRequest("cl-2", "endpoint-1")
 	_, err = srv.Request(context.Background(), req2)
 	require.Error(t, err)
 }
@@ -247,12 +302,12 @@ func TestOutOfIPs(t *testing.T) {
 func TestOutOfIPsIPv6(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "fe80::1:2/127", 127)
 
-	req1 := newRequest("cl-1")
+	req1 := newRequest("cl-1", "endpoint-1")
 	conn1, err := srv.Request(context.Background(), req1)
 	require.NoError(t, err)
 	validateConn(t, conn1, "fe80::1:2/128", "fe80::1:3/128")
 
-	req2 := newRequest("cl-2")
+	req2 := newRequest("cl-2", "endpoint-1")
 	_, err = srv.Request(context.Background(), req2)
 	require.Error(t, err)
 }
@@ -260,7 +315,7 @@ func TestOutOfIPsIPv6(t *testing.T) {
 func TestAllIPsExcluded(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "192.168.1.2/31", 31)
 
-	req1 := newRequest("cl-1")
+	req1 := newRequest("cl-1", "endpoint-1")
 	req1.Connection.Context.IpContext.ExcludedPrefixes = []string{"192.168.1.2/31"}
 	conn1, err := srv.Request(context.Background(), req1)
 	require.Nil(t, conn1)
@@ -270,7 +325,7 @@ func TestAllIPsExcluded(t *testing.T) {
 func TestAllIPsExcludedIPv6(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "fe80::1:2/127", 127)
 
-	req1 := newRequest("cl-1")
+	req1 := newRequest("cl-1", "endpoint-1")
 	req1.Connection.Context.IpContext.ExcludedPrefixes = []string{"fe80::1:2/127"}
 	conn1, err := srv.Request(context.Background(), req1)
 	require.Nil(t, conn1)
@@ -281,13 +336,13 @@ func TestAllIPsExcludedIPv6(t *testing.T) {
 func TestRefreshRequest(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "192.168.3.4/16", 24)
 
-	req := newRequest("cl-1")
+	req := newRequest("cl-1", "endpoint-1")
 	req.Connection.Context.IpContext.ExcludedPrefixes = []string{"192.168.0.1/32"}
 	conn, err := srv.Request(context.Background(), req)
 	require.NoError(t, err)
 	validateConn(t, conn, "192.168.0.0/32", "192.168.0.2/32")
 
-	req = newRequest("cl-1")
+	req = newRequest("cl-1", "endpoint-1")
 	req.Connection.Id = conn.Id
 	conn, err = srv.Request(context.Background(), req)
 	require.NoError(t, err)
@@ -304,13 +359,13 @@ func TestRefreshRequest(t *testing.T) {
 func TestRefreshRequestIPv6(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "fe80::/64", 124)
 
-	req := newRequest("cl-1")
+	req := newRequest("cl-1", "endpoint-1")
 	req.Connection.Context.IpContext.ExcludedPrefixes = []string{"fe80::1/128"}
 	conn, err := srv.Request(context.Background(), req)
 	require.NoError(t, err)
 	validateConn(t, conn, "fe80::/128", "fe80::2/128")
 
-	req = newRequest("cl-1")
+	req = newRequest("cl-1", "endpoint-1")
 	req.Connection.Id = conn.Id
 	conn, err = srv.Request(context.Background(), req)
 	require.NoError(t, err)
@@ -326,10 +381,10 @@ func TestRefreshRequestIPv6(t *testing.T) {
 func TestNextError(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "192.168.3.4/16", 24)
 
-	_, err := next.NewNetworkServiceServer(srv, injecterror.NewServer()).Request(context.Background(), newRequest("cl-1"))
+	_, err := next.NewNetworkServiceServer(srv, injecterror.NewServer()).Request(context.Background(), newRequest("cl-1", "endpoint-1"))
 	require.Error(t, err)
 
-	conn, err := srv.Request(context.Background(), newRequest("cl-1"))
+	conn, err := srv.Request(context.Background(), newRequest("cl-1", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn, "192.168.0.0/32", "192.168.0.1/32")
 }
@@ -337,16 +392,16 @@ func TestNextError(t *testing.T) {
 func TestRefreshNextError(t *testing.T) {
 	srv := newIpamServer(context.Background(), t, "192.168.3.4/16", 24)
 
-	req := newRequest("cl-1")
+	req := newRequest("cl-1", "endpoint-1")
 	conn, err := srv.Request(context.Background(), req)
 	require.NoError(t, err)
 	validateConn(t, conn, "192.168.0.0/32", "192.168.0.1/32")
 
 	req.Connection = conn.Clone()
-	_, err = next.NewNetworkServiceServer(srv, injecterror.NewServer()).Request(context.Background(), newRequest("cl-1"))
+	_, err = next.NewNetworkServiceServer(srv, injecterror.NewServer()).Request(context.Background(), newRequest("cl-1", "endpoint-1"))
 	require.Error(t, err)
 
-	conn, err = srv.Request(context.Background(), newRequest("cl-1"))
+	conn, err = srv.Request(context.Background(), newRequest("cl-1", "endpoint-1"))
 	require.NoError(t, err)
 	validateConn(t, conn, "192.168.0.0/32", "192.168.0.1/32")
 }
@@ -359,23 +414,23 @@ func TestServers(t *testing.T) {
 		newIpamServer(context.Background(), t, "fd00::/8", 24),
 	)
 
-	conn1, err := srv.Request(context.Background(), newRequest("cl-1"))
+	conn1, err := srv.Request(context.Background(), newRequest("cl-1", "endpoint-1"))
 	require.NoError(t, err)
 	t.Log(conn1.GetContext().IpContext)
 	validateConns(t, conn1, []string{"192.168.0.0/32", "fd00::/128"}, []string{"192.168.0.1/32", "fd00::1/128"})
 
-	conn2, err := srv.Request(context.Background(), newRequest("cl-2"))
+	conn2, err := srv.Request(context.Background(), newRequest("cl-2", "endpoint-1"))
 	require.NoError(t, err)
 	validateConns(t, conn2, []string{"192.168.0.2/32", "fd00::2/128"}, []string{"192.168.0.3/32", "fd00::3/128"})
 
 	_, err = srv.Close(context.Background(), conn1)
 	require.NoError(t, err)
 
-	conn3, err := srv.Request(context.Background(), newRequest("cl-3"))
+	conn3, err := srv.Request(context.Background(), newRequest("cl-3", "endpoint-1"))
 	require.NoError(t, err)
 	validateConns(t, conn3, []string{"192.168.0.0/32", "fd00::/128"}, []string{"192.168.0.1/32", "fd00::1/128"})
 
-	conn4, err := srv.Request(context.Background(), newRequest("cl-4"))
+	conn4, err := srv.Request(context.Background(), newRequest("cl-4", "endpoint-1"))
 	require.NoError(t, err)
 	validateConns(t, conn4, []string{"192.168.0.4/32", "fd00::4/128"}, []string{"192.168.0.5/32", "fd00::5/128"})
 }
@@ -387,13 +442,13 @@ func TestRefreshRequestMultiServer(t *testing.T) {
 		newIpamServer(context.Background(), t, "fe80::/64", 24),
 	)
 
-	req := newRequest("cl-1")
+	req := newRequest("cl-1", "endpoint-1")
 	req.Connection.Context.IpContext.ExcludedPrefixes = []string{"192.168.0.1/32", "fe80::1/128"}
 	conn, err := srv.Request(context.Background(), req)
 	require.NoError(t, err)
 	validateConns(t, conn, []string{"192.168.0.0/32", "fe80::/128"}, []string{"192.168.0.2/32", "fe80::2/128"})
 
-	req = newRequest("cl-1")
+	req = newRequest("cl-1", "endpoint-1")
 	req.Connection = conn
 	conn, err = srv.Request(context.Background(), req)
 	require.NoError(t, err)

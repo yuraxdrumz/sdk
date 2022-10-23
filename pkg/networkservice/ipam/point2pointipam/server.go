@@ -63,6 +63,7 @@ func (s *ipamServer) Request(ctx context.Context, request *networkservice.Networ
 		ExcludePrefixes: ipContext.GetExcludedPrefixes(),
 		SrcAddress: ipContext.GetSrcIpAddrs(),
 		DstAddress: ipContext.GetDstIpAddrs(),
+		EndpointName: request.Connection.NetworkServiceEndpointName,
 	})
 
 
@@ -110,6 +111,7 @@ func (s *ipamServer) Close(ctx context.Context, conn *networkservice.Connection)
 		NetworkServiceNames: []string{conn.NetworkService},
 		NetworkServiceLabels: nil,
 		ExcludePrefixes: ipContext.GetExcludedPrefixes(),
+		EndpointName: conn.NetworkServiceEndpointName,
 	})
 
 	if err != nil {

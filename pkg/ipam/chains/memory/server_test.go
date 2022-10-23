@@ -74,7 +74,6 @@ func Test_IPAM_Endpoint_Allocate_Different_CIDRS_Different_NS(t *testing.T) {
 		c := newIPAMClient(ctx, t, &connectTO)
 
 		endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
-			Type: ipam.Type_ALLOCATE,
 			Name: fmt.Sprintf("endpoint-%d", i),
 			NetworkServiceNames: []string{fmt.Sprintf("ns-%d", i)},
 		})
@@ -99,13 +98,37 @@ func Test_IPAM_Endpoint_Allocate_Same_CIDRS_Same_NS(t *testing.T) {
 		c := newIPAMClient(ctx, t, &connectTO)
 
 		endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
-			Type: ipam.Type_ALLOCATE,
 			Name: fmt.Sprintf("endpoint-%d", i),
 			NetworkServiceNames: []string{"same-ns"},
 		})
 
 		require.NoError(t, err)
 		require.Equal(t, "172.16.0.0/24", endpoint.Prefix, i)
+		require.NotEmpty(t, endpoint.ExcludePrefixes)
+	}
+}
+
+func Test_IPAM_Endpoint_Allocate_Unique_CIDRS_Same_NS(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	connectTO := newMemoryIpamServer(ctx, t, "172.16.0.0/16", 24)
+
+	for i := 0; i < 10; i++ {
+		c := newIPAMClient(ctx, t, &connectTO)
+
+		endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
+			Name: fmt.Sprintf("endpoint-%d", i),
+			NetworkServiceNames: []string{"same-ns"},
+			UniqueCidr: true,
+		})
+
+		require.NoError(t, err)
+		require.Equal(t, fmt.Sprintf("172.16.%d.0/24", i), endpoint.Prefix, i)
 		require.NotEmpty(t, endpoint.ExcludePrefixes)
 	}
 }
@@ -123,7 +146,6 @@ func Test_IPAM_Same_Client_Allocate_Twice(t *testing.T) {
 	c := newIPAMClient(ctx, t, &connectTO)
 
 	endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
-		Type: ipam.Type_ALLOCATE,
 		Name: "endpoint-1",
 		NetworkServiceNames: []string{"ns-1"},
 	})
@@ -138,11 +160,13 @@ func Test_IPAM_Same_Client_Allocate_Twice(t *testing.T) {
 		Name: "client-1",
 		NetworkServiceNames: []string{"ns-1"},
 		ExcludePrefixes: endpoint.ExcludePrefixes,
+		EndpointName: "endpoint-1",
 	})
 
 	require.NoError(t, err)
 	require.Equal(t, "172.31.0.1/32", client.SrcAddress[0], "client-1")
 	require.Equal(t, "172.31.0.0/32", client.DstAddress[0], "client-1")
+	require.Equal(t, "172.31.0.0/24", client.Prefix, "client-1")
 	require.NotEmpty(t, client.ExcludePrefixes)
 
 
@@ -151,6 +175,7 @@ func Test_IPAM_Same_Client_Allocate_Twice(t *testing.T) {
 		Name: "client-1",
 		NetworkServiceNames: []string{"ns-1"},
 		ExcludePrefixes: endpoint.ExcludePrefixes,
+		EndpointName: "endpoint-1",
 	})
 
 	require.NoError(t, err)
@@ -173,7 +198,6 @@ func Test_IPAM_Different_Client_Allocate_Twice(t *testing.T) {
 	c := newIPAMClient(ctx, t, &connectTO)
 
 	endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
-		Type: ipam.Type_ALLOCATE,
 		Name: "endpoint-1",
 		NetworkServiceNames: []string{"ns-1"},
 	})
@@ -188,6 +212,7 @@ func Test_IPAM_Different_Client_Allocate_Twice(t *testing.T) {
 		Name: "client-1",
 		NetworkServiceNames: []string{"ns-1"},
 		ExcludePrefixes: endpoint.ExcludePrefixes,
+		EndpointName: "endpoint-1",
 	})
 
 	require.NoError(t, err)
@@ -201,6 +226,7 @@ func Test_IPAM_Different_Client_Allocate_Twice(t *testing.T) {
 		Name: "client-2",
 		NetworkServiceNames: []string{"ns-1"},
 		ExcludePrefixes: endpoint.ExcludePrefixes,
+		EndpointName: "endpoint-1",
 	})
 
 	require.NoError(t, err)
@@ -223,7 +249,6 @@ func Test_IPAM_Client_Allocate_Two_NS(t *testing.T) {
 	c := newIPAMClient(ctx, t, &connectTO)
 
 	endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
-		Type: ipam.Type_ALLOCATE,
 		Name: "endpoint-1",
 		NetworkServiceNames: []string{"ns-1"},
 	})
@@ -234,7 +259,6 @@ func Test_IPAM_Client_Allocate_Two_NS(t *testing.T) {
 
 
 	endpoint2, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
-		Type: ipam.Type_ALLOCATE,
 		Name: "endpoint-2",
 		NetworkServiceNames: []string{"ns-2"},
 	})
@@ -249,6 +273,7 @@ func Test_IPAM_Client_Allocate_Two_NS(t *testing.T) {
 		Name: "client-1",
 		NetworkServiceNames: []string{"ns-1"},
 		ExcludePrefixes: nil,
+		EndpointName: "endpoint-1",
 	})
 
 	require.NoError(t, err)
@@ -260,6 +285,7 @@ func Test_IPAM_Client_Allocate_Two_NS(t *testing.T) {
 		Name: "client-2",
 		NetworkServiceNames: []string{"ns-2"},
 		ExcludePrefixes: nil,
+		EndpointName: "endpoint-2",
 	})
 
 	require.NoError(t, err)
@@ -268,6 +294,66 @@ func Test_IPAM_Client_Allocate_Two_NS(t *testing.T) {
 
 }
 
+
+func Test_IPAM_Client_Allocate_SameNS_UniqueCIDR(t *testing.T) {
+	t.Cleanup(func() {
+		goleak.VerifyNone(t)
+	})
+
+	var ctx, cancel = context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	connectTO := newMemoryIpamServer(ctx, t, "172.31.0.0/16", 24)
+
+	c := newIPAMClient(ctx, t, &connectTO)
+
+	endpoint, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
+		Name: "endpoint-1",
+		NetworkServiceNames: []string{"ns-1"},
+		UniqueCidr: true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.0/24", endpoint.Prefix, "endpoint-1")
+	require.NotEmpty(t, endpoint.ExcludePrefixes)
+
+
+	endpoint2, err := c.RegisterEndpoint(ctx, &ipam.Endpoint{
+		Name: "endpoint-2",
+		NetworkServiceNames: []string{"ns-1"},
+		UniqueCidr: true,
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.1.0/24", endpoint2.Prefix, "endpoint-2")
+	require.NotEmpty(t, endpoint2.ExcludePrefixes)
+
+
+	client, err := c.RegisterClient(ctx, &ipam.Client{
+		Id: "1",
+		Name: "client-1",
+		NetworkServiceNames: []string{"ns-1"},
+		ExcludePrefixes: nil,
+		EndpointName: "endpoint-1",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.0.1/32", client.SrcAddress[0], "client-1")
+	require.Equal(t, "172.31.0.0/32", client.DstAddress[0], "client-1")
+
+	client2, err := c.RegisterClient(ctx, &ipam.Client{
+		Id: "2",
+		Name: "client-2",
+		NetworkServiceNames: []string{"ns-1"},
+		ExcludePrefixes: nil,
+		EndpointName: "endpoint-2",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "172.31.1.1/32", client2.SrcAddress[0], "client-2")
+	require.Equal(t, "172.31.1.0/32", client2.DstAddress[0], "client-2")
+
+}
 
 func Test_IPAM_Client_Allocate_Endpoint_Not_Exists(t *testing.T) {
 	t.Cleanup(func() {
@@ -288,5 +374,5 @@ func Test_IPAM_Client_Allocate_Endpoint_Not_Exists(t *testing.T) {
 		ExcludePrefixes: nil,
 	})
 
-	require.ErrorContains(t, err, memory.ErrEndpointInfoUndefined.Error())
+	require.ErrorContains(t, err, memory.ErrEndpointNameUndefined.Error())
 }
