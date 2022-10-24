@@ -127,18 +127,22 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 	// check client name in inner map
 	clientInfo := endpoint.clientInfo[client.Name]
 
+	log.FromContext(ctx).Debugf("client info %+v", clientInfo)
+	log.FromContext(ctx).Debugf("request %+v", client)
+
 	// client info can be in another endpoint when healing occurs
 	if clientInfo == nil {
 		for _, existingEndpoint := range ns.endpoints {
 			for _, existingClient := range ns.endpoints[existingEndpoint.name].clientInfo {
-				if existingClient.name == client.Name {
-					log.FromContext(ctx).Debugf("found client in another endpoint = %s, moving client to current endpoint = %s", existingEndpoint.name, endpoint.name)
+				if existingClient.name == client.Name && existingEndpoint.name != client.EndpointName {
+					log.FromContext(ctx).Debugf("found client = %s in another endpoint = %s, moving client to current endpoint = %s", client.Name, existingEndpoint.name, endpoint.name)
 					// set client to current endpoint
 					ns.endpoints[client.EndpointName].clientInfo[client.Name] = existingClient
 					// remove client from previous endpoint
 					delete(	ns.endpoints[existingEndpoint.name].clientInfo, client.Name)
 					// set current client info to existing info
 					clientInfo = existingClient
+					break
 				}
 			}
 		}
@@ -168,13 +172,12 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 
 	// otherwise, either client info does not exist or we need to update the exclude prefixes
 
-	// if not, pull new p2p ip from pool
 	dstAddr, srcAddr, err := endpoint.pool.PullP2PAddrs(ipv4exclude, ipv6exclude)
 	if err != nil {
 		return nil, err
 	}
 
-	log.FromContext(ctx).Infof("pulled new src = %s and dst = %s for client = %s, network service = %s", srcAddr, dstAddr, client.Name, nsName)
+	log.FromContext(ctx).Infof("pulled new src = %s and dst = %s for client = %s, network service = %s, endpoint = %s", srcAddr, dstAddr, client.Name, nsName, client.EndpointName)
 	// save new client in map
 	newClientConnInfo := &Client{
 		srcAddr: srcAddr.String(),
