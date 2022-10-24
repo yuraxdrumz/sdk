@@ -106,13 +106,15 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 		ipv6exclude.AddNetString(prefix)
 	}
 
+	logger := log.FromContext(ctx).WithField("request_id", client.Id)
+
 	// get ns name
 	nsName := client.NetworkServiceNames[0]
 	// get ns map from cache, should have endpoint already populated it
 	ns := s.nameToNetworkService[nsName]
 
 	if client.EndpointName == "" {
-		log.FromContext(ctx).WithField("client", client).Errorf("endpoint name is empty for network service = %s", nsName)
+		logger.WithField("client", client).Errorf("endpoint name is empty for network service = %s", nsName)
 		return nil, ErrEndpointNameUndefined	
 	}
 
@@ -120,22 +122,22 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 
 	// endpoint should have created an ip pool already
 	if endpoint == nil {
-		log.FromContext(ctx).WithField("client", client).Errorf("endpoint should have populated info for network service = %s", nsName)
+		logger.WithField("client", client).Errorf("endpoint should have populated info for network service = %s", nsName)
 		return nil, ErrEndpointInfoUndefined
 	}
 
 	// check client name in inner map
 	clientInfo := endpoint.clientInfo[client.Name]
 
-	log.FromContext(ctx).Debugf("client info %+v", clientInfo)
-	log.FromContext(ctx).Debugf("request %+v", client)
+	logger.Debugf("client info %+v", clientInfo)
+	logger.Debugf("request %+v", client)
 
 	// client info can be in another endpoint when healing occurs
 	if clientInfo == nil {
 		for _, existingEndpoint := range ns.endpoints {
 			for _, existingClient := range ns.endpoints[existingEndpoint.name].clientInfo {
 				if existingClient.name == client.Name && existingEndpoint.name != client.EndpointName {
-					log.FromContext(ctx).Debugf("found client = %s in another endpoint = %s, moving client to current endpoint = %s", client.Name, existingEndpoint.name, endpoint.name)
+					logger.Debugf("found client = %s in another endpoint = %s, moving client to current endpoint = %s", client.Name, existingEndpoint.name, endpoint.name)
 					// set client to current endpoint
 					ns.endpoints[client.EndpointName].clientInfo[client.Name] = existingClient
 					// remove client from previous endpoint
@@ -151,13 +153,13 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 	clientInfoNeedsUpdate := false
 	
 	if clientInfo != nil && (clientInfo.shouldUpdate(ipv4exclude) || clientInfo.shouldUpdate(ipv6exclude)) {
-		log.FromContext(ctx).Debugf("client info for network service = %s, client name = %s needs to be updated due to exclusion, from src = %s, from dst = %s", nsName, client.Name, clientInfo.srcAddr, clientInfo.dstAddr)
+		logger.Debugf("client info for network service = %s, client name = %s needs to be updated due to exclusion, from src = %s, from dst = %s", nsName, client.Name, clientInfo.srcAddr, clientInfo.dstAddr)
 		clientInfoNeedsUpdate = true
 	}
 
 	// if client info exists and src and dst do not fall in exclude range
 	if clientInfo != nil && !clientInfoNeedsUpdate {
-		log.FromContext(ctx).Debugf("found existing info for client, for network service = %s, client name = %s, src = %s, dst = %s", nsName, client.Name, clientInfo.srcAddr, clientInfo.dstAddr)
+		logger.Debugf("found existing info for client, for network service = %s, client name = %s, src = %s, dst = %s", nsName, client.Name, clientInfo.srcAddr, clientInfo.dstAddr)
 		if client.SrcAddress == nil {
 			client.SrcAddress = []string{clientInfo.srcAddr}
 		}
@@ -177,7 +179,7 @@ func (s *memoryIPAMServer) RegisterClient(ctx context.Context, client *ipam.Clie
 		return nil, err
 	}
 
-	log.FromContext(ctx).Infof("pulled new src = %s and dst = %s for client = %s, network service = %s, endpoint = %s", srcAddr, dstAddr, client.Name, nsName, client.EndpointName)
+	logger.Infof("pulled new src = %s and dst = %s for client = %s, network service = %s, endpoint = %s", srcAddr, dstAddr, client.Name, nsName, client.EndpointName)
 	// save new client in map
 	newClientConnInfo := &Client{
 		srcAddr: srcAddr.String(),
@@ -221,6 +223,9 @@ func (s *memoryIPAMServer) UnregisterEndpoint(ctx context.Context, endpoint *ipa
 func (s *memoryIPAMServer) UnregisterClient(ctx context.Context, client *ipam.Client) (*emptypb.Empty, error) {
 	s.poolMutex.Lock()
 	defer s.poolMutex.Unlock()
+
+
+	logger := log.FromContext(ctx).WithField("request_id", client.Id)
 	// get ns name
 	nsName := client.NetworkServiceNames[0]
 	// get ns map from cache, should have endpoint already populated it
@@ -230,7 +235,7 @@ func (s *memoryIPAMServer) UnregisterClient(ctx context.Context, client *ipam.Cl
 
 	// endpoint should have created an ip pool already
 	if endpoint == nil {
-		log.FromContext(ctx).WithField("client", client).Errorf("endpoint with name = %s should have populated info for network service = %s", client.EndpointName, nsName)
+		logger.WithField("client", client).Errorf("endpoint with name = %s should have populated info for network service = %s", client.EndpointName, nsName)
 		return nil, ErrEndpointInfoUndefined
 	}
 
@@ -240,11 +245,11 @@ func (s *memoryIPAMServer) UnregisterClient(ctx context.Context, client *ipam.Cl
 
 	// if client exists return same addr
 	if clientInfo == nil {
-		log.FromContext(ctx).Debugf("did not find information, for network service = %s, client name = %s", nsName, client.Name)
+		logger.Debugf("did not find information, for network service = %s, client name = %s", nsName, client.Name)
 		return &emptypb.Empty{}, ErrClientNotExists
 	}
 
-	log.FromContext(ctx).Debugf("returning client name = %s src = %s and dst = %s addresses back to ip pool, for network service = %s", client.Name, clientInfo.srcAddr, clientInfo.dstAddr, nsName)
+	logger.Infof("returning client name = %s src = %s and dst = %s addresses back to ip pool, for network service = %s", client.Name, clientInfo.srcAddr, clientInfo.dstAddr, nsName)
 
 	endpoint.pool.AddNetString(clientInfo.srcAddr)
 	endpoint.pool.AddNetString(clientInfo.dstAddr)
@@ -262,6 +267,8 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 	mutex.Lock()
 	defer mutex.Unlock()
 
+	logger := log.FromContext(ctx).WithField("endpoint_name", endpoint.Name)
+
 	if generalIPPool == nil {
 		return nil, IPPoolNotInitializedWithPrefix
 	}
@@ -269,11 +276,11 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 	var resp ipam.Endpoint
 
 	for _, excludePrefix := range endpoint.ExcludePrefixes {
-		log.FromContext(ctx).Debugf("excluding prefix from pool, prefix = %s", excludePrefix)
+		logger.Debugf("excluding prefix from pool, prefix = %s", excludePrefix)
 		generalIPPool.ExcludeString(excludePrefix)
 	}
 
-	log.FromContext(ctx).Debugf("trying to find if endpoint name = %s in network service = %s has an existing ip pool", endpoint.Name, endpoint.NetworkServiceNames[0])
+	logger.Debugf("trying to find if endpoint name = %s in network service = %s has an existing ip pool", endpoint.Name, endpoint.NetworkServiceNames[0])
 
 	// find ns
 	ns := s.nameToNetworkService[endpoint.NetworkServiceNames[0]]
@@ -283,12 +290,12 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 		ep := ns.endpoints[endpoint.Name]
 		// endpoint exists (for example on endpoint restart / reschedule)
 		if ep != nil {
-			log.FromContext(ctx).Debugf("found prefix = %s for network service = %s, endpoint name = %s", ep.prefix, endpoint.NetworkServiceNames[0], endpoint.Name)
+			logger.Debugf("found prefix = %s for network service = %s, endpoint name = %s", ep.prefix, endpoint.NetworkServiceNames[0], endpoint.Name)
 			// return existing prefix
 			resp.Prefix = ep.prefix.String()
 		} else {
 			// create new endpoint
-			log.FromContext(ctx).Debugf("starting to create new endpoint name = %s in network service = %s", endpoint.Name, endpoint.NetworkServiceNames[0])
+			logger.Debugf("starting to create new endpoint name = %s in network service = %s", endpoint.Name, endpoint.NetworkServiceNames[0])
 			newEndpoint, err := s.createEndpoint(ctx, endpoint.Name, endpoint.NetworkServiceNames[0], ns)
 			if err != nil {
 				return nil, err
@@ -303,7 +310,7 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 			uniqueCIDR: endpoint.UniqueCidr,
 		}
 
-		log.FromContext(ctx).Debugf("creating new network service = %s, unique cidr = %t", endpoint.NetworkServiceNames[0], settings.uniqueCIDR)
+		logger.Debugf("creating new network service = %s, unique cidr = %t", endpoint.NetworkServiceNames[0], settings.uniqueCIDR)
 
 		newNS, err := s.createNetworkService(ctx, settings)
 		if err != nil {
@@ -311,7 +318,7 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 		}
 
 		// create new endpoint
-		log.FromContext(ctx).Debugf("starting to create new endpoint name = %s in network service = %s", endpoint.Name, endpoint.NetworkServiceNames[0])
+		logger.Debugf("starting to create new endpoint name = %s in network service = %s", endpoint.Name, endpoint.NetworkServiceNames[0])
 		newEndpoint, err := s.createEndpoint(ctx, endpoint.Name, endpoint.NetworkServiceNames[0], nil)
 		if err != nil {
 			return nil, err
@@ -329,9 +336,9 @@ func (s *memoryIPAMServer) RegisterEndpoint(ctx context.Context, endpoint *ipam.
 		resp.Prefix = newEndpoint.prefix.String()
 	}
 
-	log.FromContext(ctx).Debugf("adding request.prefix = %s to excludedPrefixes", resp.Prefix)
+	logger.Debugf("adding request.prefix = %s to excludedPrefixes", resp.Prefix)
 	s.excludedPrefixes = append(s.excludedPrefixes, endpoint.Prefix)
-	log.FromContext(ctx).Debugf("excluding prefix from pool, prefix = %s", resp.Prefix)
+	logger.Debugf("excluding prefix from pool, prefix = %s", resp.Prefix)
 	generalIPPool.ExcludeString(resp.Prefix)
 	resp.ExcludePrefixes = endpoint.ExcludePrefixes
 	resp.ExcludePrefixes = append(resp.ExcludePrefixes, s.excludedPrefixes...)
