@@ -290,8 +290,8 @@ func Test_IPAM_Different_Client_Twice_Different_Endpoints_Unique_CIDR(t *testing
 	})
 
 	require.NoError(t, err)
-	require.Equal(t, "172.31.0.3/32", client2.SrcAddress[0], "client-2")
-	require.Equal(t, "172.31.0.2/32", client2.DstAddress[0], "client-2")
+	require.Equal(t, "172.31.0.1/32", client2.SrcAddress[0], "client-2")
+	require.Equal(t, "172.31.0.0/32", client2.DstAddress[0], "client-2")
 	require.NotEmpty(t, client2.ExcludePrefixes)
 }
 
