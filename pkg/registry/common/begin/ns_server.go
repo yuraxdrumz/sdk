@@ -60,6 +60,7 @@ func (b *beginNSServer) Register(ctx context.Context, in *registry.NetworkServic
 			resp, err = b.Register(ctx, in)
 			return
 		}
+
 		ctx = withEventFactory(ctx, eventFactoryServer)
 		resp, err = next.NetworkServiceRegistryServer(ctx).Register(ctx, in)
 		if err != nil {
@@ -72,6 +73,7 @@ func (b *beginNSServer) Register(ctx context.Context, in *registry.NetworkServic
 		eventFactoryServer.registration = mergeNS(in, resp)
 		eventFactoryServer.state = established
 		eventFactoryServer.response = resp
+		eventFactoryServer.updateContext(ctx)
 	})
 	return resp, err
 }

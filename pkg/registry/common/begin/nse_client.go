@@ -75,6 +75,7 @@ func (b *beginNSEClient) Register(ctx context.Context, in *registry.NetworkServi
 		eventFactoryClient.state = established
 		eventFactoryClient.registration = mergeNSE(in, resp.Clone())
 		eventFactoryClient.response = resp.Clone()
+		eventFactoryClient.updateContext(ctx)
 	})
 	return resp, err
 }

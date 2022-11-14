@@ -82,6 +82,7 @@ func (b *beginClient) Request(ctx context.Context, request *networkservice.Netwo
 		eventFactoryClient.state = established
 
 		eventFactoryClient.returnedConnection = conn.Clone()
+		eventFactoryClient.updateContext(ctx)
 	})
 	return conn, err
 }
