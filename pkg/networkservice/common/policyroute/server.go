@@ -18,6 +18,7 @@ package policyroute
 
 import (
 	"context"
+	"net"
 
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/networkservicemesh/api/pkg/api/networkservice"
@@ -49,6 +50,11 @@ func (p *policyrouteServer) Request(ctx context.Context, request *networkservice
 	}
 	ipContext := conn.GetContext().GetIpContext()
 
+	dstIP, _, err := net.ParseCIDR(ipContext.DstIpAddrs[0])
+	if err != nil {
+		return nil, err
+	}
+
 	// Update policies
 	// Remove old IP addresses
 	policies := p.getPolicies()
@@ -59,6 +65,13 @@ func (p *policyrouteServer) Request(ctx context.Context, request *networkservice
 					ipContext.SrcIpAddrs = append(ipContext.SrcIpAddrs[:s], ipContext.SrcIpAddrs[s+1:]...)
 					break
 				}
+			}
+		}
+
+		// Forwarder will add `[route.Prefix] via [route.NextHop] dev [nsm-interface]`
+		for _, route := range p.Routes {
+			if route.NextHop == "" {
+				route.NextHop = dstIP.String()
 			}
 		}
 	}
