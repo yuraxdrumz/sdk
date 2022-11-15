@@ -64,6 +64,12 @@ func (n *nextNetworkServiceRegistryServer) Find(query *registry.NetworkServiceQu
 	return server.Find(query, streamcontext.NetworkServiceRegistryFindServer(ctx, s))
 }
 
+func (n *nextNetworkServiceRegistryServer) FindNetworkServicesByLabels(ctx context.Context, query *registry.NetworkServicesQueryByLabels) (*registry.NetworkServicesResponse, error) {
+	server, ctx := n.getServerAndContext(ctx)
+	return server.FindNetworkServicesByLabels(ctx, query)
+}
+
+
 func (n *nextNetworkServiceRegistryServer) Unregister(ctx context.Context, request *registry.NetworkService) (*empty.Empty, error) {
 	server, ctx := n.getServerAndContext(ctx)
 	return server.Unregister(ctx, request)
