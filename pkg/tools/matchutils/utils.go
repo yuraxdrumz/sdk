@@ -19,6 +19,7 @@ package matchutils
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"text/template"
 
@@ -27,6 +28,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/networkservicemesh/api/pkg/api/registry"
+	"github.com/networkservicemesh/sdk/pkg/tools/log"
 )
 
 // MatchNetworkServices returns true if two network services are matched
@@ -34,6 +36,25 @@ func MatchNetworkServices(left, right *registry.NetworkService) bool {
 	return (left.Name == "" || strings.Contains(right.Name, left.Name)) &&
 		(left.Payload == "" || left.Payload == right.Payload) &&
 		(left.Matches == nil || cmp.Equal(left.Matches, right.Matches, cmp.Comparer(proto.Equal)))
+}
+
+// MatchNetworkServices returns true if two network services are matched
+func MatchNetworkServiceEndpointsByLabel(networkServiceEndpoint *registry.NetworkServiceEndpoint, labels map[string]*registry.NetworkServiceLabels) bool {
+	for nsName, nsLabels := range labels {
+		for k, v := range nsLabels.Labels {
+			for _, queryNsLabels := range networkServiceEndpoint.NetworkServiceLabels {
+				for qk, qv := range queryNsLabels.Labels {
+					log.FromContext(context.Background()).Debugf("comparing found key = %s to query key = %s", k, qk)
+					log.FromContext(context.Background()).Debugf("comparing found value = %s to query value = %s", v, qv)
+					if k == qk && v == qv {
+						log.FromContext(context.Background()).Infof("found NS = %s for query = %s", nsName, networkServiceEndpoint)
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // MatchNetworkServiceEndpoints  returns true if two network service endpoints are matched
