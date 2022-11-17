@@ -39,15 +39,15 @@ func MatchNetworkServices(left, right *registry.NetworkService) bool {
 }
 
 // MatchNetworkServices returns true if two network services are matched
-func MatchNetworkServiceEndpointsByLabel(networkServiceEndpoint *registry.NetworkServiceEndpoint, labels map[string]*registry.NetworkServiceLabels) bool {
+func MatchNetworkServicesByLabel(networkService *registry.NetworkService, labels map[string]*registry.NetworkServiceLabels) bool {
 	for nsName, nsLabels := range labels {
 		for k, v := range nsLabels.Labels {
-			for _, queryNsLabels := range networkServiceEndpoint.NetworkServiceLabels {
-				for qk, qv := range queryNsLabels.Labels {
+			for _, match := range networkService.Matches {
+				for qk, qv := range match.Metadata.Labels {
 					log.FromContext(context.Background()).Debugf("comparing found key = %s to query key = %s", k, qk)
 					log.FromContext(context.Background()).Debugf("comparing found value = %s to query value = %s", v, qv)
 					if k == qk && v == qv {
-						log.FromContext(context.Background()).Infof("found NS = %s for query = %s", nsName, networkServiceEndpoint)
+						log.FromContext(context.Background()).Infof("found NS = %s for query = %s", nsName, networkService)
 						return true
 					}
 				}
